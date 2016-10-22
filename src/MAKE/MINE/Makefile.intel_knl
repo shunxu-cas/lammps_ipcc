@@ -30,7 +30,7 @@ SHLIBFLAGS =	-shared
 # LAMMPS ifdef settings
 # see possible settings in Section 2.2 (step 4) of manual
 
-LMP_INC =	-DLAMMPS_GZIP -DLAMMPS_JPEG
+LMP_INC =	-DLAMMPS_GZIP #-DLAMMPS_JPEG
 
 # MPI library
 # see discussion in Section 2.2 (step 5) of manual
@@ -66,7 +66,7 @@ FFT_LIB =       -L$MKLROOT/lib/intel64/ -lmkl_intel_ilp64 \
 
 JPG_INC =       
 JPG_PATH = 	
-JPG_LIB =	-ljpeg
+JPG_LIB =	#-ljpeg
 
 # ---------------------------------------------------------------------
 # build rules and dependencies
