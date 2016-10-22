@@ -1,0 +1,8 @@
+.settings
+*.tar.gz
+.cproject
+.project
+.pydevproject
+.DS_Store
+/src/Obj_*
+
