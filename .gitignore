@@ -5,4 +5,6 @@
 .pydevproject
 .DS_Store
 /src/Obj_*
+/src/lmp_*
+/src/Makefile.package*
 
