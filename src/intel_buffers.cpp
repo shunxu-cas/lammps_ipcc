@@ -22,7 +22,7 @@ using namespace LAMMPS_NS;
 
 template <class flt_t, class acc_t>
 IntelBuffers<flt_t, acc_t>::IntelBuffers(class LAMMPS *lmp_in) :
-    lmp(lmp_in), _x(0), _q(0), _quat(0), _f(0), _off_threads(0),
+    lmp(lmp_in), _x(0), _v(0), _q(0), _quat(0), _f(0), _off_threads(0),
     _buf_size(0), _buf_local_size(0) {
   _list_alloc_atoms = 0;
   _ntypes = 0;
@@ -59,6 +59,7 @@ void IntelBuffers<flt_t, acc_t>::free_buffers()
 {
   if (_buf_size > 0) {
     atom_t * x = get_x();
+    atom_t * v = get_v();
     flt_t * q = get_q();
     quat_t * quat = get_quat();
 
@@ -68,7 +69,7 @@ void IntelBuffers<flt_t, acc_t>::free_buffers()
       acc_t * ev_global = get_ev_global();
       if (ev_global != 0) {
         #pragma offload_transfer target(mic:_cop) \
-          nocopy(x:alloc_if(0) free_if(1)) \
+          nocopy(x,v:alloc_if(0) free_if(1)) \
 	  nocopy(f_start:alloc_if(0) free_if(1)) \
 	  nocopy(ev_global:alloc_if(0) free_if(1))
       }
@@ -86,12 +87,14 @@ void IntelBuffers<flt_t, acc_t>::free_buffers()
 
     if (_separate_buffers) {
       lmp->memory->destroy(_host_x);
+      lmp->memory->destroy(_host_v);
       if (q != 0) lmp->memory->destroy(_host_q);
       if (quat != 0) lmp->memory->destroy(_host_quat);
     }
     #endif
 
     lmp->memory->destroy(x);
+    lmp->memory->destroy(v);
     if (q != 0) lmp->memory->destroy(q);
     if (quat != 0) lmp->memory->destroy(quat);
     lmp->memory->destroy(_f);
@@ -116,6 +119,7 @@ void IntelBuffers<flt_t, acc_t>::_grow(const int nall, const int nlocal,
     _buf_local_size *= 2;
   const int f_stride = get_stride(_buf_local_size);
   lmp->memory->create(_x, _buf_size,"intel_x");
+  lmp->memory->create(_v, _buf_size,"intel_v");
   if (lmp->atom->q != NULL)
     lmp->memory->create(_q, _buf_size, "intel_q");
   if (lmp->atom->ellipsoid != NULL)
@@ -125,6 +129,7 @@ void IntelBuffers<flt_t, acc_t>::_grow(const int nall, const int nlocal,
   #ifdef _LMP_INTEL_OFFLOAD
   if (_separate_buffers) {
     lmp->memory->create(_host_x, _buf_size,"intel_host_x");
+    lmp->memory->create(_host_v, _buf_size,"intel_host_v");
     if (lmp->atom->q != NULL)
       lmp->memory->create(_host_q, _buf_size, "intel_host_q");
     if (lmp->atom->ellipsoid != NULL)
@@ -134,20 +139,21 @@ void IntelBuffers<flt_t, acc_t>::_grow(const int nall, const int nlocal,
   if (offload_end > 0) {
     lmp->memory->create(_off_f, f_stride * _off_threads, "intel_off_f");
     const atom_t * const x = get_x();
+    const atom_t * const v = get_v();
     const flt_t * const q = get_q();
     const vec3_acc_t * f_start = get_off_f();
     acc_t * ev_global = get_ev_global();
     if (lmp->atom->q != NULL) {
       if (x != NULL && q != NULL && f_start != NULL && ev_global != NULL) {
         #pragma offload_transfer target(mic:_cop) \
-          nocopy(x,q:length(_buf_size) alloc_if(1) free_if(0)) \
+          nocopy(x,v,q:length(_buf_size) alloc_if(1) free_if(0)) \
 	  nocopy(f_start:length(f_stride*_off_threads) alloc_if(1) free_if(0))\
 	  nocopy(ev_global:length(8) alloc_if(1) free_if(0))
       }
     } else {
-      if (x != NULL && f_start != NULL && ev_global != NULL) {
+      if (x != NULL && v != NULL && f_start != NULL && ev_global != NULL) {
         #pragma offload_transfer target(mic:_cop) \
-          nocopy(x:length(_buf_size) alloc_if(1) free_if(0)) \
+          nocopy(x,v:length(_buf_size) alloc_if(1) free_if(0)) \
           nocopy(f_start:length(f_stride*_off_threads) alloc_if(1) free_if(0))\
 	  nocopy(ev_global:length(8) alloc_if(1) free_if(0))
       }

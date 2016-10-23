@@ -153,6 +153,13 @@ class IntelBuffers {
     #endif
     return _x;
   }
+  inline atom_t * get_v(const int offload = 1) {
+    #ifdef _LMP_INTEL_OFFLOAD
+    if (_separate_buffers && offload == 0) return _host_v;
+    #endif
+    return _v;
+  }
+
   inline flt_t * get_q(const int offload = 1) {
     #ifdef _LMP_INTEL_OFFLOAD
     if (_separate_buffers && offload == 0) return _host_q;
@@ -186,6 +193,11 @@ class IntelBuffers {
         _x[i].y = lmp->atom->x[i][1];
         _x[i].z = lmp->atom->x[i][2];
         _x[i].w = lmp->atom->type[i];
+
+        _v[i].x = lmp->atom->v[i][0];
+        _v[i].y = lmp->atom->v[i][1];
+        _v[i].z = lmp->atom->v[i][2];
+        _v[i].w = lmp->atom->type[i];
       }
       if (lmp->atom->q != NULL)
         for (int i = ifrom; i < ito; i++)
@@ -195,6 +207,10 @@ class IntelBuffers {
         _x[i].x = lmp->atom->x[i][0];
         _x[i].y = lmp->atom->x[i][1];
         _x[i].z = lmp->atom->x[i][2];
+
+        _v[i].x = lmp->atom->v[i][0];
+        _v[i].y = lmp->atom->v[i][1];
+        _v[i].z = lmp->atom->v[i][2];
       }
     }
   }
@@ -203,12 +219,17 @@ class IntelBuffers {
   inline void thr_pack_cop(const int ifrom, const int ito,
 			   const int offset, const bool dotype = false) {
     double ** x = lmp->atom->x + offset;
+    double ** v = lmp->atom->v + offset;
     if (dotype == false) {
       #pragma vector nontemporal
       for (int i = ifrom; i < ito; i++) {
         _x[i].x = x[i][0];
         _x[i].y = x[i][1];
         _x[i].z = x[i][2];
+
+        _v[i].x = v[i][0];
+        _v[i].y = v[i][1];
+        _v[i].z = v[i][2];
       }
     } else {
       int *type = lmp->atom->type + offset;
@@ -218,6 +239,11 @@ class IntelBuffers {
 	_x[i].y = x[i][1];
 	_x[i].z = x[i][2];
 	_x[i].w = type[i];
+
+	_v[i].x = v[i][0];
+	_v[i].y = v[i][1];
+	_v[i].z = v[i][2];
+	_v[i].w = type[i];
       }
     }
   }
@@ -225,10 +251,15 @@ class IntelBuffers {
   inline void thr_pack_host(const int ifrom, const int ito,
 			    const int offset) {
     double ** x = lmp->atom->x + offset;
+    double ** v = lmp->atom->v + offset;
     for (int i = ifrom; i < ito; i++) {
       _host_x[i].x = x[i][0];
       _host_x[i].y = x[i][1];
       _host_x[i].z = x[i][2];
+
+      _host_v[i].x = v[i][0];
+      _host_v[i].y = v[i][1];
+      _host_v[i].z = v[i][2];
     }
   }
 
@@ -245,6 +276,17 @@ class IntelBuffers {
     _host_x[nall].y = INTEL_BIGP;
     _host_x[nall].z = INTEL_BIGP;
     _host_x[nall].w = 1;
+
+    memcpy(_host_v + host_min_local, _v + host_min_local,
+   	   used_local * sizeof(atom_t));
+       memcpy(_host_v + host_min_local + used_local, _v + host_min_ghost,
+   	   used_ghost * sizeof(atom_t));
+    //   int nall = used_local + used_ghost + host_min_local;
+       _host_v[nall].x = INTEL_BIGP;
+       _host_v[nall].y = INTEL_BIGP;
+       _host_v[nall].z = INTEL_BIGP;
+       _host_v[nall].w = 1;
+
     if (lmp->atom->q != NULL) {
       memcpy(_host_q + host_min_local, _q + host_min_local,
 	     used_local * sizeof(flt_t));
@@ -267,7 +309,7 @@ class IntelBuffers {
 
  protected:
   LAMMPS *lmp;
-  atom_t *_x;
+  atom_t *_x, *_v;
   flt_t *_q;
   quat_t *_quat;
   vec3_acc_t * _f;
@@ -292,7 +334,7 @@ class IntelBuffers {
 
   #ifdef _LMP_INTEL_OFFLOAD
   int _separate_buffers;
-  atom_t *_host_x;
+  atom_t *_host_x, *_host_v;
   flt_t *_host_q;
   quat_t *_host_quat;
   vec3_acc_t *_off_f;
