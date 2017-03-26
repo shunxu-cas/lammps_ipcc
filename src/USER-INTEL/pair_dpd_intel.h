@@ -49,8 +49,7 @@ public:
 
 protected:
     RanMarsOffload *random_thr;
-    int offload_nthreads;
-    int all_nthreads;
+    int both_nthreads;
     void free_rand_thr();
 
 private:

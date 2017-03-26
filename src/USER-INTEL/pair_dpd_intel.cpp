@@ -10,7 +10,7 @@
 
 /* ----------------------------------------------------------------------
  Contributing authors: Shun Xu (Computer Network Information Center, CAS)
-                      W. Michael Brown (Intel)
+ W. Michael Brown (Intel)
  ------------------------------------------------------------------------- */
 
 #include "pair_dpd_intel.h"
@@ -127,8 +127,7 @@ PairDPDIntel::PairDPDIntel(LAMMPS *lmp) :
     seed = 100;
     random_thr = NULL;
     fix = NULL;
-    offload_nthreads = -1;
-    all_nthreads = -1;
+    both_nthreads = -1;
 }
 
 PairDPDIntel::~PairDPDIntel() {
@@ -139,7 +138,7 @@ void PairDPDIntel::free_rand_thr() {
     RanMarsOffload *orandom_thr=random_thr;
     if (random_thr !=NULL && _cop >= 0) {
 #pragma offload_transfer target(mic:_cop) \
-    nocopy(orandom_thr:length(all_nthreads) alloc_if(0) free_if(1))
+    nocopy(orandom_thr:length(both_nthreads) alloc_if(0) free_if(1))
     }
 #endif
     memory->destroy(random_thr);
@@ -527,23 +526,22 @@ void PairDPDIntel::init_style() {
     const int nthreads = comm->nthreads;
     const int seedme = seed + comm->me;
     const int nprocs = comm->nprocs;
+    if (both_nthreads < nthreads)
+        both_nthreads = nthreads;
     //max threads for both CPU and MIC
-    all_nthreads = nthreads;
-    if (all_nthreads < offload_nthreads)
-        all_nthreads = offload_nthreads;
     if (random_thr) { //run again, try free it
         printf("rank =%d/%d free old RanMarsOffload[%d] \n", comm->me, nprocs,
-                nthreads);
+                both_nthreads);
         free_rand_thr();
     }
-    memory->create(random_thr, all_nthreads, "RanMarsOffload"); //new cpu side
-    printf("rank =%d/%d create RanMarsOffload[%d/%d] on CPU\n", comm->me,
-            nprocs, nthreads, all_nthreads);
+    memory->create(random_thr, both_nthreads, "RanMarsOffload"); //new cpu side
+    printf("rank =%d/%d create RanMarsOffload[%d] on CPU\n", comm->me, nprocs,
+            both_nthreads);
     if (random_thr) {
         // generate a random number generator instance for
         // all threads != 0. make sure we use unique seeds.
-        RanMarsOffload_init(&random_thr[0], seedme * 23 + all_nthreads);
-        for (int i = 0; i < all_nthreads; ++i) {
+        RanMarsOffload_init(&random_thr[0], seedme * 23 + both_nthreads);
+        for (int i = 0; i < nthreads; ++i) {
             int s = seedme
                     + int(RanMarsOffload_uniform(&random_thr[0]) * 900000000);
             RanMarsOffload_init(&random_thr[i], s);
@@ -553,7 +551,7 @@ void PairDPDIntel::init_style() {
 
 #ifdef _LMP_INTEL_OFFLOAD
     printf("rank =%d/%d offload: cop_id=%d, balance=%g, nthreads=%d, rsize=%d\n",
-            comm->me,nprocs, _cop, fix->offload_balance(), offload_nthreads, int(sizeof(RanMarsOffload)));
+            comm->me,nprocs, _cop, fix->offload_balance(), both_nthreads, int(sizeof(RanMarsOffload)));
 
     if (_cop < 0) {
         //error->warning(FLERR, "_cop<0 in Offload mode.");
@@ -562,13 +560,13 @@ void PairDPDIntel::init_style() {
 
     if (random_thr) {
         RanMarsOffload *orandom_thr=random_thr;
-        //alloc on mic with offload_nthreads but no comm->nthreads
-#pragma offload target(mic:_cop) if(all_nthreads>0) \
-        in(all_nthreads,seedme) \
-		nocopy(orandom_thr:length(all_nthreads) alloc_if(1) free_if(0))
+        //alloc on mic with both_nthreads but no comm->nthreads
+#pragma offload target(mic:_cop) if(both_nthreads>0) \
+        in(both_nthreads,seedme) \
+		nocopy(orandom_thr:length(both_nthreads) alloc_if(1) free_if(0))
         {
-            RanMarsOffload_init(&orandom_thr[0], seedme*157 + all_nthreads);
-            for (int i = 0; i < all_nthreads; ++i) {
+            RanMarsOffload_init(&orandom_thr[0], seedme*157 + both_nthreads);
+            for (int i = 0; i < both_nthreads; ++i) {
                 int s=seedme+int(RanMarsOffload_uniform(&orandom_thr[0])* 900000000);
                 RanMarsOffload_init(&orandom_thr[i], s);
                 // printf("mic i=%d,seed=%d\n",i,orandom_thr[i].seed);
@@ -577,7 +575,7 @@ void PairDPDIntel::init_style() {
         }
         //if(comm->me==0) {
         printf("rank =%d/%d alloc RanMarsOffload[%d] on MIC[%d] and random_thr @ %p\n",
-                comm->me,nprocs, offload_nthreads,_cop, random_thr);
+                comm->me,nprocs, both_nthreads,_cop, random_thr);
         //}
     }
 #endif
@@ -626,7 +624,7 @@ void PairDPDIntel::pack_force_const(ForceConst<flt_t> &fc,
     }
 #ifdef _LMP_INTEL_OFFLOAD
     if (_cop < 0) return;
-    offload_nthreads=buffers->get_off_threads();
+    both_nthreads=buffers->get_off_threads();
     flt_t * special_lj = fc.special_lj;
     FC_PACKED1_T *opk1 = fc.pk1[0];
     flt_t * ocutneighsq = cutneighsq[0];
