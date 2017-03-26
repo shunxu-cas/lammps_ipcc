@@ -82,7 +82,7 @@ private:
             flt_t lj3, lj4;
         } fc_packed2;
 
-        /* special_lj[4] is a static type, retain offloading values by default ! */
+        /* is special_lj[4] a static type?  */
         //_alignvar(flt_t special_lj[4],64);
         flt_t * special_lj;
         fc_packed1 **pk1;

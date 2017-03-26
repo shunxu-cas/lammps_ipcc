@@ -530,13 +530,11 @@ void PairDPDIntel::init_style() {
         both_nthreads = nthreads;
     //max threads for both CPU and MIC
     if (random_thr) { //run again, try free it
-        printf("rank =%d/%d free old RanMarsOffload[%d] \n", comm->me, nprocs,
-                both_nthreads);
+        // printf("rank =%d/%d free old RanMarsOffload[%d] \n", comm->me, nprocs,  both_nthreads);
         free_rand_thr();
     }
     memory->create(random_thr, both_nthreads, "RanMarsOffload"); //new cpu side
-    printf("rank =%d/%d create RanMarsOffload[%d] on CPU\n", comm->me, nprocs,
-            both_nthreads);
+    //printf("rank =%d/%d create RanMarsOffload[%d] on CPU\n", comm->me, nprocs, both_nthreads);
     if (random_thr) {
         // generate a random number generator instance for
         // all threads != 0. make sure we use unique seeds.
@@ -550,17 +548,17 @@ void PairDPDIntel::init_style() {
     }
 
 #ifdef _LMP_INTEL_OFFLOAD
-    printf("rank =%d/%d offload: cop_id=%d, balance=%g, nthreads=%d, rsize=%d\n",
-            comm->me,nprocs, _cop, fix->offload_balance(), both_nthreads, int(sizeof(RanMarsOffload)));
-
+    if(comm->me==0) {
+        fprintf(screen,"Pair_dpd_intel MPI ranks = %d offload ...\n  cop_id = %d\n  balance = %g\n  both_nthreads = %d\n  RNG size = %d\n",
+                nprocs, _cop, fix->offload_balance(), both_nthreads, int(sizeof(RanMarsOffload)));
+    }
     if (_cop < 0) {
-        //error->warning(FLERR, "_cop<0 in Offload mode.");
         return;
     }
 
     if (random_thr) {
         RanMarsOffload *orandom_thr=random_thr;
-        //alloc on mic with both_nthreads but no comm->nthreads
+        //alloc random_thr[both_nthreads] on MIC
 #pragma offload target(mic:_cop) if(both_nthreads>0) \
         in(both_nthreads,seedme) \
 		nocopy(orandom_thr:length(both_nthreads) alloc_if(1) free_if(0))
@@ -573,10 +571,10 @@ void PairDPDIntel::init_style() {
             }
             fflush(0);
         }
-        //if(comm->me==0) {
-        printf("rank =%d/%d alloc RanMarsOffload[%d] on MIC[%d] and random_thr @ %p\n",
-                comm->me,nprocs, both_nthreads,_cop, random_thr);
-        //}
+
+        // printf("rank =%d/%d alloc RanMarsOffload[%d] on MIC[%d] and random_thr @ %p\n",
+        //        comm->me,nprocs, both_nthreads,_cop, random_thr);
+
     }
 #endif
 
@@ -646,15 +644,14 @@ void PairDPDIntel::ForceConst<flt_t>::set_ntypes(const int ntypes,
         Memory *memory, const int cop) {
     if (ntypes != _ntypes) {
         if (_ntypes > 0) {
-            printf("set_ntypes free_offload=%d\n", _cop);
+            // printf("set_ntypes free_offload=%d\n", _cop);
             free_offload(_cop);
         }
         if (ntypes > 0) {
             _cop = cop;
             memory->create(pk1, ntypes, ntypes, "fc.pk1");
             memory->create(special_lj, 4, "fc.special_lj");
-            printf("set_ntypes create ntypes=%d->%d %p\n", _ntypes, ntypes,
-                    pk1);
+            //printf("set_ntypes create ntypes=%d->%d %p\n", _ntypes, ntypes, pk1);
 #ifdef _LMP_INTEL_OFFLOAD
             fc_packed1 *opk1 = pk1[0];
             flt_t * ospecial_lj=special_lj;
