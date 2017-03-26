@@ -9,10 +9,10 @@
  ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
- Contributing author: Shun Xu (CAS), W. Michael Brown (Intel)
+ Contributing authors: Shun Xu (Computer Network Information Center, CAS)
+                      W. Michael Brown (Intel)
  ------------------------------------------------------------------------- */
 
-#include <math.h>
 #include "pair_dpd_intel.h"
 #include "atom.h"
 #include "comm.h"
@@ -27,7 +27,6 @@
 using namespace LAMMPS_NS;
 
 #define FC_PACKED1_T typename ForceConst<flt_t>::fc_packed1
-#define FC_PACKED2_T typename ForceConst<flt_t>::fc_packed2
 
 #define EPSILON 1.0e-10
 /* ---------------------------------------------------------------------- */
@@ -35,6 +34,7 @@ using namespace LAMMPS_NS;
 #pragma offload_attribute(push, target(mic))
 #endif
 
+#include <math.h>
 double RanMarsOffload_uniform(RanMarsOffload *rng) { //uniform RN
     double uni = rng->u[rng->i97] - rng->u[rng->j97];
     if (uni < 0.0)
@@ -62,6 +62,7 @@ void RanMarsOffload_init(RanMarsOffload *rng, int seed) {
         seed = 100;
         //"Invalid seed for Marsaglia random # generator";
     }
+    rng->seed = seed;
     rng->save = 0;
     //u = new double[97 + 1];
 
@@ -123,22 +124,26 @@ PairDPDIntel::PairDPDIntel(LAMMPS *lmp) :
         PairDPD(lmp) {
     suffix_flag |= Suffix::INTEL;
     respa_enable = 0;
+    seed = 100;
     random_thr = NULL;
     fix = NULL;
-    off_threads = -1;
+    offload_nthreads = -1;
+    all_nthreads = -1;
 }
 
 PairDPDIntel::~PairDPDIntel() {
+    free_rand_thr();
+}
+void PairDPDIntel::free_rand_thr() {
 #ifdef _LMP_INTEL_OFFLOAD
-    RanMarsOffload * random_thr=this->random_thr;
-    int othreads=this->off_threads;
-#pragma offload_transfer target(mic:_cop) if(othreads>0) \
-    nocopy(random_thr:length(othreads) alloc_if(0) free_if(1))
+    RanMarsOffload *orandom_thr=random_thr;
+    if (random_thr !=NULL && _cop >= 0) {
+#pragma offload_transfer target(mic:_cop) \
+    nocopy(orandom_thr:length(all_nthreads) alloc_if(0) free_if(1))
+    }
 #endif
-
     memory->destroy(random_thr);
 }
-
 /* ---------------------------------------------------------------------- */
 
 void PairDPDIntel::compute(int eflag, int vflag) {
@@ -172,7 +177,6 @@ void PairDPDIntel::compute(int eflag, int vflag,
 
     if (ago != 0 && fix->separate_buffers() == 0) {
         fix->start_watch(TIME_PACK);
-
 #if defined(_OPENMP)
 #pragma omp parallel default(none) shared(eflag,vflag,buffers,fc)
 #endif
@@ -274,6 +278,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
     const int * _noalias const numneigh = list->numneigh;
     const int * _noalias const cnumneigh = buffers->cnumneigh(list);
     const int * _noalias const firstneigh = buffers->firstneigh(list);
+
     const flt_t * _noalias const special_lj = fc.special_lj;
     const flt_t dtinvsqrt = 1.0 / sqrt(update->dt);
     const FC_PACKED1_T * _noalias const pk1 = fc.pk1[0];
@@ -281,6 +286,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
     const int ntypes = atom->ntypes + 1;
     const int eatom = this->eflag_atom;
     const int rank = comm->me;
+
     // Determine how much data to transfer
     int x_size, q_size, f_stride, ev_size, separate_flag;
     IP_PRE_get_transfern(ago, NEWTON_PAIR, EVFLAG, EFLAG, vflag, buffers,
@@ -290,14 +296,15 @@ void PairDPDIntel::eval(const int offload, const int vflag,
     FORCE_T* _noalias f_start;
     acc_t * _noalias ev_global;
     IP_PRE_get_buffers(offload, buffers, fix, tc, f_start, ev_global);
-    const int nthreads = tc; //openMP or mic
-    RanMarsOffload * orandom_thr = this->random_thr;
-    int cop = this->_cop;
+
+    const int nthreads = tc; //openMP on CPU or MIC
+    //printf("rank=%d nthreads=%d, minlocal=%d,f_stride=%d\n", rank, nthreads, minlocal, f_stride);
+    RanMarsOffload *orandom_thr = random_thr; //dynamics offloading
 #ifdef _LMP_INTEL_OFFLOAD
     double *timer_compute = fix->off_watch_pair();
     int *overflow = fix->get_off_overflow_flag();
     if (offload) fix->start_watch(TIME_OFFLOAD_LATENCY);
-#pragma offload target(mic:cop) if(offload) \
+#pragma offload target(mic:_cop) if(offload) \
 	    in(special_lj:length(0) alloc_if(0) free_if(0)) \
 	    in(pk1:length(0) alloc_if(0) free_if(0)) \
 	    in(firstneigh:length(0) alloc_if(0) free_if(0)) \
@@ -342,11 +349,11 @@ void PairDPDIntel::eval(const int offload, const int vflag,
 
             FORCE_T* _noalias const f = f_start - minlocal + (tid * f_stride);
             memset(f + minlocal, 0, f_stride * sizeof(FORCE_T)); //*2?
-            printf(
-                    "rank=%d tid=%d/%d, minlocal=%d,f_stride=%d, iifrom=%d, iito=%d\n",
-                    rank, tid, nthreads, minlocal, f_stride, iifrom, iito);
+            //printf("rank=%d tid=%d/%d nprocs=%d, minlocal=%d,f_stride=%d, iifrom=%d, iito=%d\n",
+            //        rank, tid, nthreads, omp_get_max_threads(), minlocal, f_stride, iifrom, iito);
 
-            RanMarsOffload & rng = orandom_thr[tid];
+            //each openMP thread uses a RNG, so this kind RNG should have good independence
+            RanMarsOffload * rng = &orandom_thr[tid];
 
             for (int i = iifrom; i < iito; ++i) {
                 const int itype = x[i].w;
@@ -374,11 +381,11 @@ void PairDPDIntel::eval(const int offload, const int vflag,
                         sv0 = sv1 = sv2 = sv3 = sv4 = sv5 = (acc_t) 0;
                 }
 
-#if defined(LMP_SIMD_COMPILER)
-#pragma vector aligned
-#pragma simd reduction(+:fxtmp, fytmp, fztmp, fwtmp, sevdwl, \
-	                       sv0, sv1, sv2, sv3, sv4, sv5)
-#endif
+//#if defined(LMP_SIMD_COMPILER)
+//#pragma vector aligned
+//#pragma simd reduction(+:fxtmp, fytmp, fztmp, fwtmp, sevdwl, \
+//	                       sv0, sv1, sv2, sv3, sv4, sv5)
+//#endif
                 for (int jj = 0; jj < jnum; jj++) {
                     flt_t evdwl = (flt_t) 0.0;
                     const int sbindex = jlist[jj] >> SBBITS & 3;
@@ -402,7 +409,8 @@ void PairDPDIntel::eval(const int offload, const int vflag,
                         const flt_t dot = delx * delvx + dely * delvy
                                 + delz * delvz;
                         const flt_t wd = 1.0 - r / rcut;
-                        double randnum = RanMarsOffload_gaussian(&rng);
+
+                        double randnum = RanMarsOffload_gaussian(rng);
                         // conservative force = a0 * wd
                         // drag force = -gamma * wd^2 * (delx dot delv) / r
                         // random force = sigma * wd * rnd * dtinvsqrt;
@@ -519,47 +527,58 @@ void PairDPDIntel::init_style() {
     const int nthreads = comm->nthreads;
     const int seedme = seed + comm->me;
     const int nprocs = comm->nprocs;
-    printf("set MPI task threads=%d\n", nthreads);
-    RanMarsOffload * orandom_thr;
-    int othreads = this->off_threads;
+    //max threads for both CPU and MIC
+    all_nthreads = nthreads;
+    if (all_nthreads < offload_nthreads)
+        all_nthreads = offload_nthreads;
     if (random_thr) { //run again, try free it
-        printf("rank =%d release RanMarsOffload[%d] \n", comm->me, off_threads);
-        orandom_thr = this->random_thr;
-#ifdef _LMP_INTEL_OFFLOAD
-#pragma offload_transfer target(mic:_cop) if(othreads>0) \
-	    nocopy(orandom_thr:length(othreads) alloc_if(0) free_if(1))
-#endif
-        memory->destroy(random_thr);
+        printf("rank =%d/%d free old RanMarsOffload[%d] \n", comm->me, nprocs,
+                nthreads);
+        free_rand_thr();
     }
-    memory->create(random_thr, nthreads, "RanMarsOffload");	//new cpu side
+    memory->create(random_thr, all_nthreads, "RanMarsOffload"); //new cpu side
+    printf("rank =%d/%d create RanMarsOffload[%d/%d] on CPU\n", comm->me,
+            nprocs, nthreads, all_nthreads);
     if (random_thr) {
         // generate a random number generator instance for
         // all threads != 0. make sure we use unique seeds.
-        for (int i = 0; i < nthreads; ++i) {
-            RanMarsOffload_init(&random_thr[i], seedme + nprocs * i);
+        RanMarsOffload_init(&random_thr[0], seedme * 23 + all_nthreads);
+        for (int i = 0; i < all_nthreads; ++i) {
+            int s = seedme
+                    + int(RanMarsOffload_uniform(&random_thr[0]) * 900000000);
+            RanMarsOffload_init(&random_thr[i], s);
+            //printf("cpu i=%d,seed=%d\n", i, random_thr[i].seed);
         }
     }
 
 #ifdef _LMP_INTEL_OFFLOAD
+    printf("rank =%d/%d offload: cop_id=%d, balance=%g, nthreads=%d, rsize=%d\n",
+            comm->me,nprocs, _cop, fix->offload_balance(), offload_nthreads, int(sizeof(RanMarsOffload)));
+
     if (_cop < 0) {
-        error->warning(FLERR, "_cop<0 in Offload mode.");
+        //error->warning(FLERR, "_cop<0 in Offload mode.");
         return;
     }
-//if(comm->me==0) {
-    printf("rank =%d set off_threads= %d offload balance=%g random_thr @ %p\n",
-            comm->me, off_threads,fix->offload_balance(),random_thr);
-//}
+
     if (random_thr) {
-        //alloc on mic with off_threads but no comm->nthreads
-        orandom_thr = this->random_thr;
-#pragma offload target(mic:_cop) if(othreads>0) \
-		in(seedme,nprocs,othreads) \
-		nocopy(orandom_thr:length(othreads) alloc_if(1) free_if(0))
+        RanMarsOffload *orandom_thr=random_thr;
+        //alloc on mic with offload_nthreads but no comm->nthreads
+#pragma offload target(mic:_cop) if(all_nthreads>0) \
+        in(all_nthreads,seedme) \
+		nocopy(orandom_thr:length(all_nthreads) alloc_if(1) free_if(0))
         {
-            for (int i = 0; i < othreads; ++i) {
-                RanMarsOffload_init(&orandom_thr[i], 2*seedme + nprocs * i);
+            RanMarsOffload_init(&orandom_thr[0], seedme*157 + all_nthreads);
+            for (int i = 0; i < all_nthreads; ++i) {
+                int s=seedme+int(RanMarsOffload_uniform(&orandom_thr[0])* 900000000);
+                RanMarsOffload_init(&orandom_thr[i], s);
+                // printf("mic i=%d,seed=%d\n",i,orandom_thr[i].seed);
             }
+            fflush(0);
         }
+        //if(comm->me==0) {
+        printf("rank =%d/%d alloc RanMarsOffload[%d] on MIC[%d] and random_thr @ %p\n",
+                comm->me,nprocs, offload_nthreads,_cop, random_thr);
+        //}
     }
 #endif
 
@@ -576,9 +595,8 @@ void PairDPDIntel::pack_force_const(ForceConst<flt_t> &fc,
 
     int tp1 = atom->ntypes + 1;
     fc.set_ntypes(tp1, memory, _cop);
-    buffers->set_ntypes(tp1);
+    buffers->set_ntypes(tp1); //offload cutneighsq
     flt_t **cutneighsq = buffers->get_cutneighsq();
-
 // Repeat cutsq calculation because done after call to init_style
     double rcut, cutneigh;
     for (int i = 1; i <= atom->ntypes; i++) {
@@ -608,18 +626,18 @@ void PairDPDIntel::pack_force_const(ForceConst<flt_t> &fc,
     }
 #ifdef _LMP_INTEL_OFFLOAD
     if (_cop < 0) return;
-    off_threads=buffers->get_off_threads();
+    offload_nthreads=buffers->get_off_threads();
     flt_t * special_lj = fc.special_lj;
     FC_PACKED1_T *opk1 = fc.pk1[0];
     flt_t * ocutneighsq = cutneighsq[0];
     int tp1sq = tp1 * tp1;
-    int cop=this->_cop;
     if (opk1 != NULL) {
-#pragma offload_transfer target(mic:cop) \
+#pragma offload_transfer target(mic:_cop) \
       in(special_lj: length(4) alloc_if(0) free_if(0)) \
       in(opk1: length(tp1sq) alloc_if(0) free_if(0)) \
-      in(ocutneighsq: length(tp1sq))
+      in(ocutneighsq: length(tp1sq) alloc_if(0) free_if(0))
     }
+
 #endif
 }
 
@@ -630,34 +648,45 @@ void PairDPDIntel::ForceConst<flt_t>::set_ntypes(const int ntypes,
         Memory *memory, const int cop) {
     if (ntypes != _ntypes) {
         if (_ntypes > 0) {
-            fc_packed1 *opk1 = pk1[0];
-
-#ifdef _LMP_INTEL_OFFLOAD
-            flt_t * ospecial_lj = special_lj;
-            if (ospecial_lj != NULL && _cop >= 0) {
-#pragma offload_transfer target(mic:_cop) \
-          nocopy(ospecial_lj, opk1: alloc_if(0) free_if(1))
-            }
-#endif
-
-            _memory->destroy(opk1);
+            printf("set_ntypes free_offload=%d\n", _cop);
+            free_offload(_cop);
         }
         if (ntypes > 0) {
             _cop = cop;
             memory->create(pk1, ntypes, ntypes, "fc.pk1");
-
+            memory->create(special_lj, 4, "fc.special_lj");
+            printf("set_ntypes create ntypes=%d->%d %p\n", _ntypes, ntypes,
+                    pk1);
 #ifdef _LMP_INTEL_OFFLOAD
-            flt_t * ospecial_lj = special_lj;
             fc_packed1 *opk1 = pk1[0];
+            flt_t * ospecial_lj=special_lj;
             int tp1sq = ntypes * ntypes;
             if (ospecial_lj != NULL && opk1 != NULL && cop >= 0) {
-#pragma offload_transfer target(mic:cop) \
+#pragma offload_transfer target(mic:_cop) \
           nocopy(ospecial_lj: length(4) alloc_if(1) free_if(0)) \
           nocopy(opk1: length(tp1sq) alloc_if(1) free_if(0))
             }
 #endif
         }
     }
+
     _ntypes = ntypes;
     _memory = memory;
+}
+
+template<class flt_t>
+void PairDPDIntel::ForceConst<flt_t>::free_offload(const int cop) {
+    //free force_const_single and force_const_single
+    //printf("free_offload<%d> pk1@ %p\n", sizeof(flt_t), pk1);
+#ifdef _LMP_INTEL_OFFLOAD
+    if (pk1 != NULL && cop >= 0) {
+        fc_packed1 *opk1 = pk1[0];
+        flt_t * ospecial_lj=special_lj;
+#pragma offload_transfer target(mic:cop) \
+             nocopy(opk1: alloc_if(0) free_if(1)) \
+             nocopy(ospecial_lj: alloc_if(0) free_if(1))
+    }
+#endif
+    _memory->destroy(pk1);
+    _memory->destroy(special_lj);
 }

@@ -12,7 +12,8 @@
  ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
- Contributing author: Shun Xu (CNIC), W. Michael Brown (Intel)
+ Contributing authors: Shun Xu (Computer Network Information Center, CAS)
+                       W. Michael Brown (Intel)
  ------------------------------------------------------------------------- */
 
 #ifdef PAIR_CLASS
@@ -30,25 +31,27 @@ PairStyle(dpd/intel,PairDPDIntel)
 namespace LAMMPS_NS {
 
 typedef struct {
-	int save;
-	double second;
-	double u[98]; //97 + 1
-	int i97, j97;
-	double c, cd, cm;
+    int save;
+    int seed;
+    double second;
+    double u[98]; //97 + 1
+    int i97, j97;
+    double c, cd, cm;
 } RanMarsOffload;
 
 class PairDPDIntel: public PairDPD {
 
 public:
     PairDPDIntel(class LAMMPS *);
-	virtual ~PairDPDIntel();
+    virtual ~PairDPDIntel();
     virtual void compute(int, int);
     void init_style();
 
 protected:
-	//_alignvar(RanMarsOffload *random_thr,64);
-	RanMarsOffload *random_thr;
-	int off_threads;
+    RanMarsOffload *random_thr;
+    int offload_nthreads;
+    int all_nthreads;
+    void free_rand_thr();
 
 private:
     FixIntel *fix;
@@ -80,17 +83,21 @@ private:
             flt_t lj3, lj4;
         } fc_packed2;
 
-        _alignvar(flt_t special_lj[4],64);
+        /* special_lj[4] is a static type, retain offloading values by default ! */
+        //_alignvar(flt_t special_lj[4],64);
+        flt_t * special_lj;
         fc_packed1 **pk1;
         //fc_packed2 **lj34;
 
         ForceConst() :
                 _ntypes(0) {
+            special_lj = NULL;
+            pk1=NULL;
         }
         ~ForceConst() {
-            set_ntypes(0, NULL, _cop);
+            free_offload(_cop);
         }
-
+        void free_offload(const int cop);
         void set_ntypes(const int ntypes, Memory *memory, const int cop);
 
     private:
