@@ -9,8 +9,11 @@
  ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
- Contributing authors: Shun Xu (Computer Network Information Center, CAS)
- W. Michael Brown (Intel)
+ Contributing authors:
+ Shun Xu (Computer Network Information Center, CAS), W. Michael Brown (Intel)
+
+ The code from the IPCC-CAS project work under the lead of executive project managers:
+ Yangang Wang (CAS), Zhong Jin (CAS), Yanguo Yang (Intel), Allen Tang (Intel)
  ------------------------------------------------------------------------- */
 
 #include "pair_dpd_intel.h"
@@ -35,7 +38,7 @@ using namespace LAMMPS_NS;
 #endif
 
 #include <math.h>
-double RanMarsOffload_uniform(RanMarsOffload *rng) { //uniform RN
+double RanMarsOffload_uniform(RanMarsOffload *rng) {
     double uni = rng->u[rng->i97] - rng->u[rng->j97];
     if (uni < 0.0)
         uni += 1.0;
@@ -64,7 +67,6 @@ void RanMarsOffload_init(RanMarsOffload *rng, int seed) {
     }
     rng->seed = seed;
     rng->save = 0;
-    //u = new double[97 + 1];
 
     ij = (seed - 1) / 30082;
     kl = (seed - 1) - 30082 * ij;
@@ -94,7 +96,7 @@ void RanMarsOffload_init(RanMarsOffload *rng, int seed) {
     rng->j97 = 33;
     RanMarsOffload_uniform(rng);
 }
-double RanMarsOffload_gaussian(RanMarsOffload *rng) { //uniform RN
+double RanMarsOffload_gaussian(RanMarsOffload *rng) {
     double first, v1, v2, rsq, fac;
 
     if (!rng->save) {
@@ -297,7 +299,6 @@ void PairDPDIntel::eval(const int offload, const int vflag,
     IP_PRE_get_buffers(offload, buffers, fix, tc, f_start, ev_global);
 
     const int nthreads = tc; //openMP on CPU or MIC
-    //printf("rank=%d nthreads=%d, minlocal=%d,f_stride=%d\n", rank, nthreads, minlocal, f_stride);
     RanMarsOffload *orandom_thr = random_thr; //dynamics offloading
 #ifdef _LMP_INTEL_OFFLOAD
     double *timer_compute = fix->off_watch_pair();
@@ -325,7 +326,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
 #endif
 
         IP_PRE_repack_for_offload(NEWTON_PAIR, separate_flag, nlocal, nall,
-                f_stride, x, 0); //nothing?
+                f_stride, x, 0);
 
         acc_t oevdwl, ov0, ov1, ov2, ov3, ov4, ov5;
         if (EVFLAG) {
@@ -347,7 +348,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
             iito += astart;
 
             FORCE_T* _noalias const f = f_start - minlocal + (tid * f_stride);
-            memset(f + minlocal, 0, f_stride * sizeof(FORCE_T)); //*2?
+            memset(f + minlocal, 0, f_stride * sizeof(FORCE_T));
             //printf("rank=%d tid=%d/%d nprocs=%d, minlocal=%d,f_stride=%d, iifrom=%d, iito=%d\n",
             //        rank, tid, nthreads, omp_get_max_threads(), minlocal, f_stride, iifrom, iito);
 
@@ -398,7 +399,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
                     if (rsq < pk1i[jtype].cutsq) { //must cutoff in DPD
                         flt_t r = sqrt(rsq);
                         if (r < EPSILON)
-                            continue; // r can be 0.0 in DPD systems
+                            continue;
                         flt_t rinv = 1.0 / r;
                         flt_t factor_dpd = special_lj[sbindex];
                         const flt_t rcut = sqrt(pk1i[jtype].cutsq);
@@ -460,7 +461,7 @@ void PairDPDIntel::eval(const int offload, const int vflag,
                 f[i].y += fytmp;
                 f[i].z += fztmp;
                 IP_PRE_ev_tally_atom(EVFLAG, EFLAG, vflag, f, fwtmp);
-            } // for ii
+            } // for i
 
 #if defined(_OPENMP)
 #pragma omp barrier
@@ -526,18 +527,17 @@ void PairDPDIntel::init_style() {
     const int nthreads = comm->nthreads;
     const int seedme = seed + comm->me;
     const int nprocs = comm->nprocs;
+    //max threads for both CPU and MIC
     if (both_nthreads < nthreads)
         both_nthreads = nthreads;
-    //max threads for both CPU and MIC
-    if (random_thr) { //run again, try free it
-        // printf("rank =%d/%d free old RanMarsOffload[%d] \n", comm->me, nprocs,  both_nthreads);
+
+    if (random_thr) { //if run again, try to free it
         free_rand_thr();
     }
-    memory->create(random_thr, both_nthreads, "RanMarsOffload"); //new cpu side
-    //printf("rank =%d/%d create RanMarsOffload[%d] on CPU\n", comm->me, nprocs, both_nthreads);
+    memory->create(random_thr, both_nthreads, "RanMarsOffload"); //new in CPU side
     if (random_thr) {
         // generate a random number generator instance for
-        // all threads != 0. make sure we use unique seeds.
+        // all threads != 0. make sure they use unique seeds.
         RanMarsOffload_init(&random_thr[0], seedme * 23 + both_nthreads);
         for (int i = 0; i < nthreads; ++i) {
             int s = seedme
@@ -549,8 +549,8 @@ void PairDPDIntel::init_style() {
 
 #ifdef _LMP_INTEL_OFFLOAD
     if(comm->me==0) {
-        fprintf(screen,"Pair_dpd_intel MPI ranks = %d offload ...\n  cop_id = %d\n  balance = %g\n  both_nthreads = %d\n  RNG size = %d\n",
-                nprocs, _cop, fix->offload_balance(), both_nthreads, int(sizeof(RanMarsOffload)));
+        fprintf(screen,"Pair_dpd_intel offload info ...\n  cop_id = %d\n  balance = %g\n  MPI ranks = %d\n  both_nthreads = %d\n  RNG size = %d\n",
+                _cop, fix->offload_balance(),nprocs, both_nthreads, int(sizeof(RanMarsOffload)));
     }
     if (_cop < 0) {
         return;
@@ -569,7 +569,7 @@ void PairDPDIntel::init_style() {
                 RanMarsOffload_init(&orandom_thr[i], s);
                 // printf("mic i=%d,seed=%d\n",i,orandom_thr[i].seed);
             }
-            fflush(0);
+            //fflush(0);
         }
 
         // printf("rank =%d/%d alloc RanMarsOffload[%d] on MIC[%d] and random_thr @ %p\n",
@@ -593,7 +593,7 @@ void PairDPDIntel::pack_force_const(ForceConst<flt_t> &fc,
     fc.set_ntypes(tp1, memory, _cop);
     buffers->set_ntypes(tp1); //offload cutneighsq
     flt_t **cutneighsq = buffers->get_cutneighsq();
-// Repeat cutsq calculation because done after call to init_style
+    // Repeat cutsq calculation because done after call to init_style
     double rcut, cutneigh;
     for (int i = 1; i <= atom->ntypes; i++) {
         for (int j = i; j <= atom->ntypes; j++) {
@@ -644,7 +644,6 @@ void PairDPDIntel::ForceConst<flt_t>::set_ntypes(const int ntypes,
         Memory *memory, const int cop) {
     if (ntypes != _ntypes) {
         if (_ntypes > 0) {
-            // printf("set_ntypes free_offload=%d\n", _cop);
             free_offload(_cop);
         }
         if (ntypes > 0) {

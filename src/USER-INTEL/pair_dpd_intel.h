@@ -12,8 +12,11 @@
  ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
- Contributing authors: Shun Xu (Computer Network Information Center, CAS)
-                       W. Michael Brown (Intel)
+ Contributing authors:
+ Shun Xu (Computer Network Information Center, CAS), W. Michael Brown (Intel)
+
+ The code from the IPCC-CAS project work under the lead of executive project managers:
+ Yangang Wang (CAS), Zhong Jin (CAS), Yanguo Yang (Intel), Allen Tang (Intel)
  ------------------------------------------------------------------------- */
 
 #ifdef PAIR_CLASS
@@ -78,20 +81,16 @@ private:
         typedef struct {
             flt_t cutsq, a0, gamma, sigma;
         } fc_packed1;
-        typedef struct {
-            flt_t lj3, lj4;
-        } fc_packed2;
 
         /* is special_lj[4] a static type?  */
         //_alignvar(flt_t special_lj[4],64);
         flt_t * special_lj;
         fc_packed1 **pk1;
-        //fc_packed2 **lj34;
 
         ForceConst() :
                 _ntypes(0) {
             special_lj = NULL;
-            pk1=NULL;
+            pk1 = NULL;
         }
         ~ForceConst() {
             free_offload(_cop);
